@@ -2,7 +2,7 @@
 // @name         爱壹帆去广告
 // @name:zh-CN   爱壹帆去广告
 // @namespace    local.iyf.adblock
-// @version      1.1.0
+// @version      1.1.1
 // @description  去掉 iyf.tv 页面广告、暂停广告和视频贴片
 // @author       local
 // @match        *://*.iyf.tv/*
@@ -12,6 +12,7 @@
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=iyf.tv
 // @run-at       document-start
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @license      MIT
 // ==/UserScript==
 
@@ -29,27 +30,35 @@
     app-gg-block,
     [class*="gg-bg-cover"],
     .gg-tips-text,
-    a:has(img[alt*="广告"]),
     a[href*="/c/c?"][href*="ppt."],
-    .ps.pggf > .bl:has(.dabf),
 
     vg-pause-f,
     vg-pause-ads,
     .vg-overlay-pause,
     .publicbox,
+    .publicbox.blocked,
+    vg-player .block-center,
     .video-player .overlay-logo,
-    vg-player > vg-pause-ads + div.caption.show,
+    #coin-or-upgrade-to-skip-ad,
 
     html.iyf-play-page #sticky-block #openRechargeBoxService,
-    html.iyf-play-page #sticky-block .stick-block-button:has(.iconVIP),
     html.iyf-play-page #sticky-block .appIconColor,
-    html.iyf-play-page #sticky-block .stick-block-button:has(.iconxiazaiAPP),
-
-    .cdk-global-overlay-wrapper:has(app-ask-app-download-dialog),
     ins.adsbygoogle,
     iframe[src*="doubleclick"],
     iframe[src*="googlesyndication"],
     iframe[src*="googletag"] {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+  `);
+  addStyle(`
+    a:has(img[alt*="广告"]),
+    .ps.pggf > .bl:has(.dabf),
+    vg-player > vg-pause-ads + div.caption.show,
+    html.iyf-play-page #sticky-block .stick-block-button:has(.iconVIP),
+    html.iyf-play-page #sticky-block .stick-block-button:has(.iconxiazaiAPP),
+    .cdk-global-overlay-wrapper:has(app-ask-app-download-dialog) {
       display: none !important;
     }
   `);
@@ -81,6 +90,15 @@
         root.appendChild(el);
         el.remove();
       }
+    } catch (_) {}
+    if (typeof unsafeWindow !== 'undefined') {
+      try {
+        unsafeWindow.eval(source);
+        return;
+      } catch (_) {}
+    }
+    try {
+      pageHook();
     } catch (_) {}
   }
 
@@ -291,14 +309,7 @@
     if (ctx) {
       const player = findPlayerComp(el);
       if (player) {
-        try {
-          player.isPlayingAds = false;
-        } catch (_) {}
-        if (player.media && player.media.isAd) {
-          try {
-            player.media.isAd = false;
-          } catch (_) {}
-        }
+        leaveAdState(player);
         dropAdMedia(player);
       }
       dropAdMedia(ctx);
@@ -356,16 +367,7 @@
       if (!isAdNow(video, comp, playerEl)) continue;
 
       clickSkip(playerEl);
-      if (comp) {
-        try {
-          comp.isPlayingAds = false;
-        } catch (_) {}
-        if (comp.media) {
-          try {
-            comp.media.isAd = false;
-          } catch (_) {}
-        }
-      }
+      if (comp) leaveAdState(comp);
 
       if (Number.isFinite(video.duration) && video.duration > 1 && video.duration < 90) {
         try {
@@ -373,11 +375,74 @@
         } catch (_) {}
       }
 
-      if (video.paused) {
-        const play = video.play();
-        if (play && typeof play.catch === 'function') play.catch(() => {});
+      resumeVideo(video);
+    }
+  }
+
+  function leaveAdState(comp) {
+    if (!comp) return;
+    try {
+      comp.isPlayingAds = false;
+    } catch (_) {}
+    try {
+      comp.isPublicBlocked = false;
+    } catch (_) {}
+    try {
+      comp.leftSecond = 0;
+    } catch (_) {}
+    if (comp.media) {
+      try {
+        comp.media.isAd = false;
+      } catch (_) {}
+    }
+    const pgmp = comp.pgmp;
+    if (pgmp) {
+      try {
+        pgmp.isPlayingAds = false;
+      } catch (_) {}
+      if (typeof pgmp.cancel === 'function') {
+        try {
+          pgmp.cancel();
+        } catch (_) {}
+      }
+      if (typeof pgmp.stopPlay === 'function') {
+        try {
+          pgmp.stopPlay();
+        } catch (_) {}
       }
     }
+    const api = comp.api;
+    if (api) {
+      try {
+        api.isPlayingAds = false;
+      } catch (_) {}
+      if (typeof api.backToPlay === 'function') {
+        try {
+          api.backToPlay();
+        } catch (_) {}
+      }
+      if (typeof api.play === 'function') {
+        try {
+          api.play();
+        } catch (_) {}
+      }
+    }
+    if (typeof comp.skipAd === 'function' && !comp.needBought) {
+      try {
+        comp.skipAd();
+      } catch (_) {}
+    }
+    if (typeof comp.toPlay === 'function') {
+      try {
+        comp.toPlay();
+      } catch (_) {}
+    }
+  }
+
+  function resumeVideo(video) {
+    if (!video || !video.paused) return;
+    const play = video.play();
+    if (play && typeof play.catch === 'function') play.catch(() => {});
   }
 
   function isMainVideo(video) {
@@ -387,15 +452,10 @@
   }
 
   function isAdNow(video, comp, playerEl) {
-    if (comp && (comp.isPlayingAds || (comp.media && comp.media.isAd))) return true;
-    if (playerEl.querySelector('.publicbox, vg-pause-ads, .control-fix')) {
-      const sec = playerEl.querySelector('.control-fix .second, .publicbox .second');
-      const n = sec && String(sec.textContent || '').trim();
-      if (n && /^\d+$/.test(n) && Number(n) > 0) return true;
-      if (playerEl.querySelector('.publicbox') && getComputedStyle(playerEl.querySelector('.publicbox')).display !== 'none') {
-        return true;
-      }
+    if (comp && (comp.isPlayingAds || comp.isPublicBlocked || (comp.leftSecond > 0) || (comp.media && comp.media.isAd))) {
+      return true;
     }
+    if (playerEl.querySelector('.publicbox, vg-pause-ads')) return true;
     const src = video.currentSrc || video.src || '';
     if (/\/c\/c|pptstatic|global-cdn\.me\/vod\//i.test(src) && video.duration > 1 && video.duration < 90) return true;
     return false;
@@ -436,6 +496,8 @@
     return findNg(ctx, (obj) => {
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
       if (typeof obj.isPlayingAds === 'boolean') return true;
+      if (typeof obj.isPublicBlocked === 'boolean' && 'leftSecond' in obj) return true;
+      if (obj.pgmp && typeof obj.pgmp.stopPlay === 'function') return true;
       if (obj.media && typeof obj.media === 'object' && 'isAd' in obj.media) return true;
       return false;
     });
@@ -471,9 +533,9 @@
   }
 
   function closeDownloadDialog() {
-    document.querySelectorAll('app-ask-app-download-dialog').forEach((dialog) => {
-      const wrap = dialog.closest('.cdk-global-overlay-wrapper');
-      const backdrop = wrap && wrap.previousElementSibling;
+    document.querySelectorAll('app-ask-app-download-dialog, #coin-or-upgrade-to-skip-ad').forEach((dialog) => {
+      const wrap = dialog.closest('.cdk-global-overlay-wrapper') || dialog;
+      const backdrop = wrap.previousElementSibling;
       if (backdrop && backdrop.classList.contains('cdk-overlay-backdrop')) {
         try {
           backdrop.click();

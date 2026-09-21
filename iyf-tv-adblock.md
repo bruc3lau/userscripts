@@ -162,7 +162,9 @@ Angular `HttpClient` 还在用 XHR。改 `open` 把 URL 记在 `this.__iyfAdUrl`
 
 `a:has(img[alt*="广告"])` 和 `a[href*="/c/c?"][href*="ppt."]` 是兜底，有的广告节点不一定挂着 `.dabf`。
 
-`vg-pause-f` / `vg-pause-ads` / `.publicbox` 是暂停广告和贴片倒计时层。`.publicbox` 在播放器源码里 `z-index: 5003`，盖满画面。
+`vg-pause-f` / `vg-pause-ads` / `.publicbox` 是暂停广告和贴片倒计时层。`.publicbox` 在播放器源码里 `z-index: 5003`，盖满画面。部分地区播不出广告素材时，播放器会给它加上 `.blocked`：模糊蒙版 + 倒计时，正片还会被 `pause()`。所以不能只藏图层，还得把 `isPlayingAds` / `isPublicBlocked` 拨掉并恢复播放。
+
+`:has()` 选择器和普通规则拆成两段 CSS。旧版写在同一条规则里，iPad Safari 如果不认 `:has()`，整段（包括 `.publicbox`）都会失效，倒计时蒙版就还在。
 
 播放页右侧工具条不要整列干掉。`#sticky-block .inner` 里有简繁体、换肤、帮助，旧脚本一锅端了。现在只在 `html.iyf-play-page` 下藏 VIP 和下载 APP。
 
@@ -220,8 +222,8 @@ Angular Ivy 把组件实例放在元素的 `__ngContext__` 里，这是一个 LV
 `isAdNow` 几条路，满足一条就算广告：
 
 1. 组件上 `isPlayingAds` 或 `media.isAd`
-2. `.publicbox` 里倒计时数字还在
-3. `.publicbox` 还显示着（CSS 已经 `display:none` 的不算，避免误触发）
+2. 组件上 `isPublicBlocked` 或 `leftSecond > 0`（被地区拦截的空蒙版倒计时）
+3. DOM 里有 `.publicbox`（藏掉也算，因为正片可能已经被 pause）
 4. 当前地址像广告 CDN（`pptstatic`、`global-cdn.me/vod/`、`/c/c`），而且时长 1～90 秒
 
 确认是广告之后：点「跳过广告」按钮；把 `isPlayingAds` 拨回去；时长小于 90 秒就 seek 到结尾；如果暂停了就 `play()`。
@@ -243,5 +245,9 @@ Angular Ivy 把组件实例放在元素的 `__ngContext__` 里，这是一个 LV
 CSS 过杀：`.ps.pggf` 干掉 UP 主，`#sticky-block .inner` 干掉整列工具条，`a[href*="wuye"]` 干掉午夜版入口。
 
 1.1.0 按站点现在的接口改 JSON，CSS 收到具体广告节点，跳过逻辑加上面积和 URL 判断，避免动到占位视频和普通控件。
+
+1.1.1 处理空蒙版倒计时：地区播不出广告时播放器会盖 `.publicbox.blocked` 并暂停正片。CSS 把 `:has()` 拆出去，避免 iPad 整段样式失效；扫到蒙版就 `stopPlay` / 恢复 `play()`。油猴增加 `unsafeWindow`，iPad 上脚本进不了页面上下文时还能钩请求。
+
+脚本不管清晰度 VIP。播放接口给免费用户的 `clarity` 里，720 / 1080 / 4K 是 `isVIP: true` 且 `path: null`，根本没有高清地址，改菜单点不出来。
 
 在 `www.yifan.tv/play/...` 上对过：右侧两块图和底下一根 VIP 横幅没了，UP 主还在，右侧简繁体 / 换肤 / 帮助还在，VIP 和下载 APP 在播放页藏掉。暂停广告节点 `vg-pause-f` 被 CSS 藏掉。贴片这条依赖 document-start 的 fetch/XHR 钩子，油猴里 `@run-at document-start` 会比这次浏览器注入测试更早装上。
