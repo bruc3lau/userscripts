@@ -2,7 +2,7 @@
 // @name         爱壹帆去广告
 // @name:zh-CN   爱壹帆去广告
 // @namespace    local.iyf.adblock
-// @version      1.1.1
+// @version      1.1.3
 // @description  去掉 iyf.tv 页面广告、暂停广告和视频贴片
 // @author       local
 // @match        *://*.iyf.tv/*
@@ -33,11 +33,19 @@
     a[href*="/c/c?"][href*="ppt."],
 
     vg-pause-f,
+    vg-pause-f .vg-vvk-p,
+    vg-pause-f .vg-bg,
+    vg-pause-f .vg-b,
     vg-pause-ads,
     .vg-overlay-pause,
+    .vg-learn-more,
+    .vg-tips-text,
     .publicbox,
     .publicbox.blocked,
-    vg-player .block-center,
+    .publicbox .block-center,
+    .publicbox .learn-more,
+    vg-player .publicbox,
+    .video-container .publicbox,
     .video-player .overlay-logo,
     #coin-or-upgrade-to-skip-ad,
 
@@ -82,21 +90,31 @@
 
   function injectPageHook() {
     const source = `;(${pageHook})();`;
+    const inject = (el) => {
+      const root = document.documentElement || document.head;
+      if (!root) return false;
+      root.appendChild(el);
+      el.remove();
+      return true;
+    };
     try {
       const el = document.createElement('script');
       el.textContent = source;
-      const root = document.documentElement || document.head;
-      if (root) {
-        root.appendChild(el);
-        el.remove();
-      }
+      inject(el);
     } catch (_) {}
     if (typeof unsafeWindow !== 'undefined') {
       try {
         unsafeWindow.eval(source);
-        return;
       } catch (_) {}
     }
+    try {
+      const blob = new Blob([source], { type: 'text/javascript' });
+      const url = URL.createObjectURL(blob);
+      const el = document.createElement('script');
+      el.src = url;
+      inject(el);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (_) {}
     try {
       pageHook();
     } catch (_) {}
@@ -106,15 +124,11 @@
     if (window.__iyfAdNetHook) return;
     window.__iyfAdNetHook = true;
 
-    try {
-      Object.defineProperty(window, 'isAdsBlocked', {
-        configurable: true,
-        get() {
-          return false;
-        },
-        set() {},
-      });
-    } catch (_) {}
+    pinAdsBlocked();
+    injectPageCss();
+    setInterval(pinAdsBlocked, 800);
+    setInterval(kickBlockedOverlay, 400);
+    watchOverlays();
 
     const PLAY_JSON = /\/v3\/video\/(?:play|detail)(?:\?|$)/i;
     const GG_JSON = /\/play\/o(?:\?|$)/i;
@@ -242,16 +256,220 @@
         },
       });
     }
+
+    function pinAdsBlocked() {
+      try {
+        window.isAdsBlocked = false;
+      } catch (_) {}
+      try {
+        Object.defineProperty(window, 'isAdsBlocked', {
+          configurable: true,
+          enumerable: true,
+          get() {
+            return false;
+          },
+          set() {},
+        });
+      } catch (_) {
+        try {
+          window.isAdsBlocked = false;
+        } catch (__) {}
+      }
+    }
+
+    function injectPageCss() {
+      if (document.getElementById('iyf-adblock-page-css')) return;
+      const el = document.createElement('style');
+      el.id = 'iyf-adblock-page-css';
+      el.textContent =
+        '.dabf,app-gg-block,[class*="gg-bg-cover"],.gg-tips-text,a[href*="/c/c?"][href*="ppt."],' +
+        'vg-pause-f,vg-pause-f .vg-vvk-p,vg-pause-f .vg-bg,vg-pause-f .vg-b,vg-pause-ads,.vg-overlay-pause,' +
+        '.vg-learn-more,.vg-tips-text,.publicbox,.publicbox.blocked,.publicbox .block-center,.publicbox .learn-more,' +
+        'vg-player .publicbox,.video-container .publicbox,#coin-or-upgrade-to-skip-ad,' +
+        'ins.adsbygoogle,iframe[src*="doubleclick"],iframe[src*="googlesyndication"],iframe[src*="googletag"]' +
+        '{display:none!important;visibility:hidden!important;pointer-events:none!important}';
+      const root = document.head || document.documentElement;
+      if (root) root.appendChild(el);
+    }
+
+    function overlaySelector() {
+      return 'vg-pause-f, vg-pause-f .vg-vvk-p, vg-pause-f .vg-bg, vg-pause-f .vg-b, .vg-learn-more, .vg-tips-text, .publicbox, .publicbox .block-center, .publicbox .learn-more';
+    }
+
+    function watchOverlays() {
+      let kickTimer = 0;
+      const run = () => {
+        injectPageCss();
+        hideOverlays();
+        if (kickTimer) return;
+        kickTimer = setTimeout(() => {
+          kickTimer = 0;
+          kickBlockedOverlay();
+        }, 80);
+      };
+      const start = () => {
+        run();
+        const root = document.documentElement;
+        if (!root || root.__iyfAdMo) return;
+        root.__iyfAdMo = true;
+        new MutationObserver(run).observe(root, { childList: true, subtree: true });
+      };
+      if (document.documentElement) start();
+      else document.addEventListener('DOMContentLoaded', start);
+    }
+
+    function hideOverlays() {
+      const nodes = document.querySelectorAll(overlaySelector());
+      for (let i = 0; i < nodes.length; i++) hideNode(nodes[i]);
+      const closer = document.querySelector('vg-pause-f .vg-pause-close-font');
+      if (closer) {
+        try {
+          closer.click();
+        } catch (_) {}
+      }
+      clearPauseImage();
+    }
+
+    function clearPauseImage() {
+      const el = document.querySelector('vg-pause-f');
+      const ctx = el && el.__ngContext__;
+      if (!ctx) return;
+      const seen = [];
+      const stack = [ctx];
+      let steps = 0;
+      while (stack.length && steps++ < 500) {
+        const cur = stack.pop();
+        if (!cur || typeof cur !== 'object') continue;
+        let known = false;
+        for (let i = 0; i < seen.length; i++) if (seen[i] === cur) known = true;
+        if (known || cur.nodeType) continue;
+        seen.push(cur);
+        if ('pauseImage' in cur) {
+          try {
+            cur.pauseImage = null;
+          } catch (_) {}
+          try {
+            cur.shouldShow = false;
+          } catch (_) {}
+          try {
+            if (Array.isArray(cur.list)) cur.list = [];
+          } catch (_) {}
+          return;
+        }
+        if (Array.isArray(cur)) {
+          const limit = Math.min(cur.length, 80);
+          for (let i = 0; i < limit; i++) stack.push(cur[i]);
+        }
+      }
+    }
+
+    function wrapApi(api) {
+      if (!api || api.__iyfSkipPlay) return;
+      api.__iyfSkipPlay = true;
+      const orig = api.playVideo;
+      if (typeof orig !== 'function') return;
+      api.playVideo = function (list, asAd) {
+        if (asAd) return;
+        const cleaned = Array.isArray(list) ? list.filter((item) => item && !item.isAd) : list;
+        return orig.call(this, cleaned && cleaned.length ? cleaned : list, false);
+      };
+    }
+
+    function isPlayerComp(obj) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+      if (typeof obj.skipAd === 'function' && 'isPublicBlocked' in obj) return true;
+      if (typeof obj.filterAllAds === 'function' && obj.pgmp) return true;
+      if (typeof obj.isPublicBlocked === 'boolean' && 'leftSecond' in obj) return true;
+      return false;
+    }
+
+    function readNgComp(el) {
+      const ctx = el && el.__ngContext__;
+      if (!ctx) return null;
+      const direct = [ctx[8], ctx[9], ctx[20]];
+      for (let i = 0; i < direct.length; i++) {
+        if (isPlayerComp(direct[i])) return direct[i];
+      }
+      return null;
+    }
+
+    function findPagePlayer() {
+      const nodes = document.querySelectorAll(
+        '.video-container, aa-videoplayer, vg-player, .aa-videoplayer-wrap'
+      );
+      for (let i = 0; i < nodes.length; i++) {
+        const comp = readNgComp(nodes[i]);
+        if (comp) return comp;
+      }
+      return null;
+    }
+
+    function kickBlockedOverlay() {
+      pinAdsBlocked();
+      hideOverlays();
+      const comp = findPagePlayer();
+      if (!comp) return;
+      try {
+        if (comp._utility) comp._utility.canViewPublic = true;
+      } catch (_) {}
+      try {
+        if (comp.api) {
+          comp.api.canViewPublic = true;
+          wrapApi(comp.api);
+        }
+      } catch (_) {}
+      const dummyAd = comp.currentPlayingAds && comp.currentPlayingAds.isAd && !comp.currentPlayingAds.src;
+      if (comp.isPublicBlocked || dummyAd) {
+        try {
+          comp.isPublicBlocked = false;
+        } catch (_) {}
+        try {
+          comp.isPlayingAds = false;
+        } catch (_) {}
+        try {
+          comp.leftSecond = 0;
+        } catch (_) {}
+        if (dummyAd) {
+          try {
+            comp.currentPlayingAds = null;
+          } catch (_) {}
+        }
+        try {
+          if (comp.pgmp && typeof comp.pgmp.cancel === 'function') comp.pgmp.cancel();
+        } catch (_) {}
+        try {
+          if (comp.pgmp && typeof comp.pgmp.stopPlay === 'function') comp.pgmp.stopPlay();
+        } catch (_) {}
+        try {
+          if (comp.api && typeof comp.api.play === 'function') comp.api.play();
+        } catch (_) {}
+        try {
+          if (typeof comp.toPlay === 'function') comp.toPlay();
+        } catch (_) {}
+      }
+    }
+
+    function hideNode(el) {
+      if (!el || !el.style) return;
+      el.style.setProperty('display', 'none', 'important');
+      el.style.setProperty('visibility', 'hidden', 'important');
+      el.style.setProperty('pointer-events', 'none', 'important');
+      el.hidden = true;
+    }
   }
 
   function addStyle(css) {
+    try {
+      const el = document.createElement('style');
+      el.setAttribute('data-iyf-adblock', '1');
+      el.textContent = css;
+      (document.head || document.documentElement).appendChild(el);
+    } catch (_) {}
     if (typeof GM_addStyle === 'function') {
-      GM_addStyle(css);
-      return;
+      try {
+        GM_addStyle(css);
+      } catch (_) {}
     }
-    const el = document.createElement('style');
-    el.textContent = css;
-    (document.head || document.documentElement).appendChild(el);
   }
 
   function isPlayPage() {
@@ -305,15 +523,13 @@
   }
 
   function neutralizePlayer(el) {
-    const ctx = el && el.__ngContext__;
-    if (ctx) {
-      const player = findPlayerComp(el);
-      if (player) {
-        leaveAdState(player);
-        dropAdMedia(player);
-      }
-      dropAdMedia(ctx);
+    const player = findPlayerComp(el);
+    if (player && isAdNow(null, player, el)) {
+      leaveAdState(player);
+      dropAdMedia(player);
     }
+    const ctx = el && el.__ngContext__;
+    if (ctx) dropAdMedia(ctx);
 
     if (!patchedPlayers.has(el)) {
       patchedPlayers.add(el);
@@ -355,21 +571,26 @@
   }
 
   function skipPlayingAd() {
+    hideBlockedOverlay();
     const videos = document.querySelectorAll('vg-player video, aa-videoplayer video, video#video_player');
     const seen = new Set();
+    const playerEl =
+      document.querySelector('aa-videoplayer') ||
+      document.querySelector('.video-container') ||
+      document.querySelector('vg-player');
+    const rootComp = findPlayerComp(playerEl);
+    if (rootComp && isAdNow(null, rootComp, playerEl)) leaveAdState(rootComp);
 
     for (const video of videos) {
-      if (!video || seen.has(video) || !isMainVideo(video)) continue;
+      if (!video || seen.has(video)) continue;
       seen.add(video);
 
-      const playerEl = video.closest('aa-videoplayer, vg-player') || video;
-      const comp = findPlayerComp(playerEl);
-      if (!isAdNow(video, comp, playerEl)) continue;
-
-      clickSkip(playerEl);
+      const box = video.closest('aa-videoplayer, .video-container, vg-player') || video;
+      const comp = findPlayerComp(box) || rootComp;
+      if (!isAdNow(video, comp, box)) continue;
       if (comp) leaveAdState(comp);
 
-      if (Number.isFinite(video.duration) && video.duration > 1 && video.duration < 90) {
+      if (isMainVideo(video) && Number.isFinite(video.duration) && video.duration > 1 && video.duration < 90) {
         try {
           video.currentTime = video.duration;
         } catch (_) {}
@@ -382,6 +603,9 @@
   function leaveAdState(comp) {
     if (!comp) return;
     try {
+      if (comp._utility) comp._utility.canViewPublic = true;
+    } catch (_) {}
+    try {
       comp.isPlayingAds = false;
     } catch (_) {}
     try {
@@ -393,6 +617,11 @@
     if (comp.media) {
       try {
         comp.media.isAd = false;
+      } catch (_) {}
+    }
+    if (comp.currentPlayingAds && !comp.currentPlayingAds.src) {
+      try {
+        comp.currentPlayingAds = null;
       } catch (_) {}
     }
     const pgmp = comp.pgmp;
@@ -416,6 +645,9 @@
       try {
         api.isPlayingAds = false;
       } catch (_) {}
+      try {
+        api.canViewPublic = true;
+      } catch (_) {}
       if (typeof api.backToPlay === 'function') {
         try {
           api.backToPlay();
@@ -426,11 +658,6 @@
           api.play();
         } catch (_) {}
       }
-    }
-    if (typeof comp.skipAd === 'function' && !comp.needBought) {
-      try {
-        comp.skipAd();
-      } catch (_) {}
     }
     if (typeof comp.toPlay === 'function') {
       try {
@@ -452,55 +679,89 @@
   }
 
   function isAdNow(video, comp, playerEl) {
-    if (comp && (comp.isPlayingAds || comp.isPublicBlocked || (comp.leftSecond > 0) || (comp.media && comp.media.isAd))) {
-      return true;
+    if (comp) {
+      if (comp.isPublicBlocked) return true;
+      if (comp.currentPlayingAds && (comp.currentPlayingAds.isAd || !comp.currentPlayingAds.src)) return true;
+      if (comp.isPlayingAds && comp.media && comp.media.isAd) return true;
     }
-    if (playerEl.querySelector('.publicbox, vg-pause-ads')) return true;
+    if (playerEl && playerEl.querySelector && playerEl.querySelector('.publicbox, vg-pause-ads')) return true;
+    if (!video) return false;
     const src = video.currentSrc || video.src || '';
     if (/\/c\/c|pptstatic|global-cdn\.me\/vod\//i.test(src) && video.duration > 1 && video.duration < 90) return true;
     return false;
   }
 
-  function findSkipButtons(root) {
-    const scope = root || document;
-    const nodes = scope.querySelectorAll('button, a, span, div, i, p');
-    const hits = [];
-    for (const el of nodes) {
-      if (el.childElementCount > 4) continue;
-      const text = (el.textContent || '').replace(/\s+/g, '');
-      if (!text || text.length > 16) continue;
-      if (/跳过.*广告|关闭广告|跳过广告/.test(text) || /^跳过\d+s?$/.test(text)) {
-        hits.push(el);
-      }
+  function hideBlockedOverlay() {
+    document
+      .querySelectorAll(
+        'vg-pause-f, vg-pause-f .vg-vvk-p, vg-pause-f .vg-bg, vg-pause-f .vg-b, .vg-learn-more, .vg-tips-text, .publicbox, .publicbox .block-center, .publicbox .learn-more'
+      )
+      .forEach(hideDom);
+    const closer = document.querySelector('vg-pause-f .vg-pause-close-font');
+    if (closer) {
+      try {
+        closer.click();
+      } catch (_) {}
     }
-    return hits;
+    const root = document.querySelector('vg-player, .video-container, aa-videoplayer');
+    if (!root) return;
+    root.querySelectorAll('div, span, p').forEach((el) => {
+      if (el.childElementCount > 3) return;
+      const text = (el.textContent || '').replace(/\s+/g, '');
+      if (text.indexOf('暂时无法显示广告') !== -1) hideDom(el.closest('.publicbox') || el);
+    });
   }
 
-  function clickSkip(root) {
-    for (const el of findSkipButtons(root)) {
-      try {
-        el.click();
-      } catch (_) {}
+  function hideDom(el) {
+    if (!el || !el.style) return;
+    el.style.setProperty('display', 'none', 'important');
+    el.style.setProperty('visibility', 'hidden', 'important');
+    el.style.setProperty('pointer-events', 'none', 'important');
+    el.hidden = true;
+  }
+
+  function isPlayerComp(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+    if (typeof obj.skipAd === 'function' && 'isPublicBlocked' in obj) return true;
+    if (typeof obj.filterAllAds === 'function' && obj.pgmp) return true;
+    if (typeof obj.isPublicBlocked === 'boolean' && 'leftSecond' in obj) return true;
+    if (obj.pgmp && typeof obj.pgmp.stopPlay === 'function') return true;
+    return false;
+  }
+
+  function readNgComp(el) {
+    const ctx = el && el.__ngContext__;
+    if (!ctx) return null;
+    const direct = [ctx[8], ctx[9], ctx[20]];
+    for (let i = 0; i < direct.length; i++) {
+      if (isPlayerComp(direct[i])) return direct[i];
     }
-    const countdown = (root || document).querySelector('.publicbox .control-fix, .control-fix');
-    if (countdown && countdown.closest('.publicbox')) {
-      try {
-        countdown.click();
-      } catch (_) {}
-    }
+    return findNg(ctx, isPlayerComp);
   }
 
   function findPlayerComp(el) {
-    const ctx = el && el.__ngContext__;
-    if (!ctx) return null;
-    return findNg(ctx, (obj) => {
-      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
-      if (typeof obj.isPlayingAds === 'boolean') return true;
-      if (typeof obj.isPublicBlocked === 'boolean' && 'leftSecond' in obj) return true;
-      if (obj.pgmp && typeof obj.pgmp.stopPlay === 'function') return true;
-      if (obj.media && typeof obj.media === 'object' && 'isAd' in obj.media) return true;
-      return false;
-    });
+    const nodes = [];
+    if (el && el.querySelector) {
+      const inner = el.querySelector('.video-container, vg-player, aa-videoplayer');
+      if (inner) nodes.push(inner);
+    }
+    let node = el;
+    while (node && node !== document.documentElement) {
+      nodes.push(node);
+      node = node.parentElement;
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      const found = readNgComp(nodes[i]);
+      if (found) return found;
+    }
+    return readNgComp(document.querySelector('.video-container')) || readNgComp(document.querySelector('aa-videoplayer'));
+  }
+
+  function isDomLike(obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    if (obj === window) return true;
+    const type = obj.nodeType;
+    return type === 1 || type === 3 || type === 9 || type === 11;
   }
 
   function findNg(root, pred) {
@@ -508,20 +769,20 @@
     const seen = new Set();
     const stack = [root];
     let steps = 0;
-    while (stack.length && steps++ < 1200) {
+    while (stack.length && steps++ < 4000) {
       const cur = stack.pop();
       if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
-      if (cur instanceof Node || cur instanceof Window) continue;
+      if (isDomLike(cur)) continue;
       seen.add(cur);
       try {
         if (pred(cur)) return cur;
       } catch (_) {}
       if (Array.isArray(cur)) {
-        const limit = Math.min(cur.length, 80);
+        const limit = Math.min(cur.length, 400);
         for (let i = 0; i < limit; i++) stack.push(cur[i]);
       } else {
         const keys = Object.keys(cur);
-        const limit = Math.min(keys.length, 30);
+        const limit = Math.min(keys.length, 80);
         for (let i = 0; i < limit; i++) {
           try {
             stack.push(cur[keys[i]]);

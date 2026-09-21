@@ -226,9 +226,9 @@ Angular Ivy 把组件实例放在元素的 `__ngContext__` 里，这是一个 LV
 3. DOM 里有 `.publicbox`（藏掉也算，因为正片可能已经被 pause）
 4. 当前地址像广告 CDN（`pptstatic`、`global-cdn.me/vod/`、`/c/c`），而且时长 1～90 秒
 
-确认是广告之后：点「跳过广告」按钮；把 `isPlayingAds` 拨回去；时长小于 90 秒就 seek 到结尾；如果暂停了就 `play()`。
+确认是广告之后：把 `isPlayingAds` / `isPublicBlocked` 拨回去，`pgmp.stopPlay()`，时长小于 90 秒就 seek 到结尾，暂停了就 `play()`。
 
-点跳过很保守。只点文字匹配 `跳过广告` / `关闭广告` / `跳过12s` 这种短节点。`.control-fix` 只有落在 `.publicbox` 里才点，免得点到普通进度条。旧脚本见着 `.control-fix` 就点，会误伤控件。
+不要去点「跳过广告」。那个按钮走的是 `skipAds()`，没登录会弹登录，登录了会弹金币/VIP 窗，不是真跳过。
 
 ---
 
@@ -247,6 +247,10 @@ CSS 过杀：`.ps.pggf` 干掉 UP 主，`#sticky-block .inner` 干掉整列工�
 1.1.0 按站点现在的接口改 JSON，CSS 收到具体广告节点，跳过逻辑加上面积和 URL 判断，避免动到占位视频和普通控件。
 
 1.1.1 处理空蒙版倒计时：地区播不出广告时播放器会盖 `.publicbox.blocked` 并暂停正片。CSS 把 `:has()` 拆出去，避免 iPad 整段样式失效；扫到蒙版就 `stopPlay` / 恢复 `play()`。油猴增加 `unsafeWindow`，iPad 上脚本进不了页面上下文时还能钩请求。
+
+1.1.2 对上了那句「暂时无法显示广告」。播放器抠掉贴片之后会塞一条 `src` 为空的假广告，再把 `isPublicBlocked` 打开，`.publicbox.blocked` 盖一层模糊蒙版，正中那句文案写在 `.block-center` 里。1.1.1 只藏 CSS，而且是在 `vg-player` 的 `__ngContext__` 里找组件——真正的播放器实例在外层 `.video-container` 的 LView[8]。找不到组件就拨不掉 `isPublicBlocked`，正片一直 `pause()`，蒙版也就还在。现在改成沿着 `.video-container` / `aa-videoplayer` 往上找，页面上下文里每 400ms 扫一次；真遇到空蒙版就 `canViewPublic=true`、`stopPlay()`、把节点 `display:none`。站点检测广告拦截的 `isAdsBlocked` 也会反复钉回 `false`，不然 `testPublic()` 五秒后又会把 `canViewPublic` 扳回去。
+
+1.1.3 把暂停时盖在画面上那张 VIP 图也拿掉了。节点是 `vg-pause-f` / `.vg-bg`，素材来自 `pauseData`，接口钩子没装上（iPad 沙箱）时就会冒出来。CSS 不再只走 `GM_addStyle`，页面里会再插一份 `<style>`，iOS 油猴样式进不去页面时也能藏。出现就点关闭、把 `pauseImage` 清掉。
 
 脚本不管清晰度 VIP。播放接口给免费用户的 `clarity` 里，720 / 1080 / 4K 是 `isVIP: true` 且 `path: null`，根本没有高清地址，改菜单点不出来。
 
